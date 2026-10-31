@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Salomat</title>
 <meta name="description" content="Shaxsiy kaloriya, vazn, fitnes va odat kundaligi">
-<meta name="theme-color" content="#F4F5F2" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0F1210" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#EAEEE8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E110F" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -17,8 +17,11 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<div class="backdrop" aria-hidden="true"><i></i><i></i></div>
 <main id="app" class="app"></main>
-<div class="tabs"><nav id="tabs" aria-label="Boʻlimlar"></nav></div>
+<div class="dock" id="dock"><nav id="tabs" class="glass" aria-label="Boʻlimlar"></nav><a class="fab" id="fab" href="#qoshish" aria-label="Ovqat qoʻshish"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></a></div>
+<div id="sheet"></div>
+<div id="toast"></div>
 <noscript>Ilova ishlashi uchun JavaScript kerak.</noscript>
 <script src="engine.js"></script>
 <script src="foods.js"></script>

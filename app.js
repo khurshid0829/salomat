@@ -20,6 +20,8 @@
     { id: 'train', title: 'Mashq qilish', why: 'Haftada 3 marta: kuch mashqi va yurish' }
   ];
   var DEFAULT_PROFILE = { male: true, age: 35, height: 175, weight: 80, act: 0, goal: 'lose', rate: 1 };
+  // shown in "one tap" before the user has history
+  var STARTER = [['palov', 300], ['obi-non', 50], ['choy', 200], ['tuxum', 110], ['lagmon', 450], ['somsa', 110], ['tovuq-shorva', 450], ['olma', 180]];
 
   var ICON = {
     ring: '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 9 9"/>',
@@ -30,8 +32,16 @@
     user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
     check: '<path d="M20 6L9 17l-5-5"/>',
     chev: '<path d="M9 6l6 6-6 6"/>',
-    search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>'
+    down: '<path d="M6 9l6 6 6-6"/>',
+    close: '<path d="M6 6l12 12M18 6L6 18"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
+    repeat: '<path d="M3 12a9 9 0 0 1 15.4-6.4L21 8M21 3v5h-5"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/>',
+    bowl: '<path d="M3 11h18a9 9 0 0 1-18 0zM8 7c0-1.5 1-1.5 1-3M12 7c0-1.5 1-1.5 1-3M16 7c0-1.5 1-1.5 1-3"/>',
+    apple: '<path d="M12 7c-3-2-8-1-8 5 0 5 3 9 5 9 1.2 0 1.8-.6 3-.6s1.8.6 3 .6c2 0 5-4 5-9 0-6-5-7-8-5zM12 7c0-2 1-4 3-4"/>',
+    moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>'
   };
+  var MEAL_ICON = { b: ['sun', 'var(--energy-soft)', 'var(--energy)'], l: ['bowl', 'var(--accent-soft)', 'var(--accent)'], s: ['apple', 'var(--fat-soft)', 'var(--fat)'], d: ['moon', 'var(--protein-soft)', 'var(--protein)'] };
 
   function icon(name, size, width) {
     return '<svg width="' + (size || 24) + '" height="' + (size || 24) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="' +
@@ -52,6 +62,11 @@
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
   function today() { return E.dateKey(Date.now()); }
   function num(v) { var x = parseFloat(String(v).replace(',', '.')); return isNaN(x) ? null : x; }
+  function frac(x) {
+    var w = Math.floor(x + 1e-9), r = Math.round((x - w) * 4) / 4;
+    var part = r === 0.5 ? '½' : r === 0.25 ? '¼' : r === 0.75 ? '¾' : '';
+    return (w || !part ? String(w) : '') + part;
+  }
 
   // ---------- storage ----------
 
@@ -77,18 +92,32 @@
   }
 
   var db = load();
-  var ui = { day: null, period: 'week', query: '', pick: null, grams: null, form: null, addMeal: 'l',
-    wType: 'yurish', wMin: 30, wLevel: 1, wDay: 0, pdraft: null, lastRoute: null };
+  var ui = { day: null, period: 'week', query: '', pick: null, grams: null, gramEdit: false, form: null, addMeal: 'l', mealMenu: false,
+    wType: 'yurish', wMin: 30, wLevel: 1, wDay: 0, pdraft: null, lastRoute: null, editFor: null };
 
-  function toast(msg) {
-    var t = document.createElement('div');
-    t.className = 'toast'; t.setAttribute('role', 'status'); t.textContent = msg;
-    document.body.appendChild(t);
-    setTimeout(function () { t.remove(); }, 1800);
+  var toastTimer = null;
+  function toast(msg, undoIds) {
+    var box = document.getElementById('toast');
+    box.innerHTML = '<div class="toast" role="status">' + icon('check', 18, 3) + '<span class="sp">' + esc(msg) + '</span>' +
+      (undoIds ? '<button data-act="undo" data-v="' + undoIds.join(',') + '">Bekor</button>' : '') + '</div>';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { box.innerHTML = ''; }, undoIds ? 4500 : 1800);
   }
 
   function allFoods() { return db.foods.concat(window.FOODS); }
   function findFood(id) { return allFoods().filter(function (f) { return f.id === id; })[0] || null; }
+
+  // The portion a food is measured in by default: the "o'rta" one, else the first.
+  function unitOf(food) {
+    var ps = food.portions || [];
+    var mid = ps.filter(function (p) { return /oʻrta/i.test(p[0]); })[0];
+    return mid || ps[0] || ['100 g', 100];
+  }
+
+  function portionLabel(food, grams) {
+    var hit = (food.portions || []).filter(function (p) { return p[1] === grams; })[0];
+    return hit ? hit[0] : grams + ' g';
+  }
 
   function dayLabel(key) {
     var d = E.keyToDate(key);
@@ -113,151 +142,198 @@
     return { p: p, trend: trend, kg: kg, adaptive: adaptive, wk: wk, b: b, t: E.dayTotals(db.log, key), macros: E.macroTargets(b.budget, kg) };
   }
 
-  // ---------- views ----------
+  function mealNow() {
+    var h = new Date().getHours();
+    return h < 11 ? 'b' : h < 16 ? 'l' : h < 18 ? 's' : 'd';
+  }
+
+  // ---------- today ----------
 
   function viewToday() {
     var key = today(), s = snapshot(key), h = '';
     h += header(dayLabel(key), 'Bugun', '<a class="icon-btn" href="#profil" aria-label="Maqsad va profil">' + icon('user', 22) + '</a>');
 
     var left = s.b.budget - s.t.kcal, over = left < 0;
-    var pct = Math.min(1, s.b.budget ? s.t.kcal / s.b.budget : 0), C = 2 * Math.PI * 54;
-    var balance = s.t.kcal - s.b.tdee;
-    h += '<section class="card" aria-label="Kunlik energiya"><div class="ring-row">' +
-      '<svg width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="' + (over ? n0(-left) + ' kkal ortiq' : n0(left) + ' kkal qoldi') + '">' +
-      '<circle cx="64" cy="64" r="54" fill="none" stroke="var(--energy-soft)" stroke-width="12"/>' +
-      '<circle cx="64" cy="64" r="54" fill="none" stroke="var(--energy)" stroke-width="12" stroke-linecap="round" stroke-dasharray="' +
-      (pct * C).toFixed(1) + ' ' + C.toFixed(1) + '" transform="rotate(-90 64 64)"/>' +
-      '<text x="64" y="62" text-anchor="middle" font-size="26" font-weight="700" fill="currentColor">' + n0(Math.abs(left)) + '</text>' +
-      '<text x="64" y="82" text-anchor="middle" font-size="12" fill="var(--muted)">' + (over ? 'kkal ortiq' : 'kkal qoldi') + '</text></svg>' +
-      '<div class="grow stack">' +
-      '<div class="kv"><span class="muted">Byudjet</span><b class="num">' + n0(s.b.budget) + '</b></div>' +
-      '<div class="kv"><span class="muted">Isteʼmol</span><b class="num" style="color:var(--energy)">' + n0(s.t.kcal) + '</b></div>' +
-      '<div class="kv"><span class="muted">Mashq</span><b class="num ok">' + (s.b.mode === 'adaptive' ? n0(s.wk) : '+' + n0(s.wk)) + '</b></div>' +
-      '</div></div>' +
-      '<div class="pill' + (over ? ' warm' : '') + '"><span>Hozircha balans</span><b class="num">' + signed(balance) + ' kkal · reja ' + signed(s.b.delta) + '</b></div>' +
-      (s.b.mode === 'adaptive' ? '<span class="tiny muted">Sarf sizning maʼlumotlaringizdan hisoblanmoqda (oxirgi 3 hafta).</span>' : '') +
-      '</section>';
+    var pct = s.b.budget ? Math.round(s.t.kcal / s.b.budget * 100) : 0;
+    h += '<section class="card" style="border-radius:30px;padding:20px 20px 18px;gap:14px" aria-label="Kunlik energiya">' +
+      '<div class="between"><span class="muted" style="font-size:15px;font-weight:600">' + (over ? 'Byudjetdan ortiq' : 'Qoldi') + '</span>' +
+      '<span class="muted small">byudjetning ' + pct + '%</span></div>' +
+      '<div class="rnd num" style="display:flex;align-items:baseline;gap:6px;margin-top:-6px"><span class="hero-num"' + (over ? ' style="color:var(--warn)"' : '') + '>' +
+      n0(Math.abs(left)) + '</span><span class="muted" style="font-size:20px;font-weight:500">kkal</span></div>' +
+      '<div class="bar" role="img" aria-label="Byudjetning ' + pct + ' foizi ishlatildi"><div style="width:' + Math.min(100, pct) + '%;background:' + (over ? 'var(--warn)' : 'var(--energy-bar)') + '"></div></div>' +
+      '<div class="grid3">' +
+      '<div class="stat"><b class="rnd num">' + n0(s.b.budget) + '</b><span>byudjet</span></div>' +
+      '<div class="stat"><b class="rnd num" style="color:var(--energy)">' + n0(s.t.kcal) + '</b><span>yedingiz</span></div>' +
+      '<div class="stat"><b class="rnd num ok">' + (s.b.mode === 'adaptive' ? n0(s.wk) : '+' + n0(s.wk)) + '</b><span>mashq</span></div></div>' +
+      '<span class="tiny muted">Hozircha balans ' + signed(s.t.kcal - s.b.tdee) + ' kkal · reja ' + signed(s.b.delta) +
+      (s.b.mode === 'adaptive' ? ' · sarf sizning maʼlumotingizdan' : '') + '</span></section>';
 
-    h += '<section class="card"><div class="grid3" style="gap:14px">' +
-      macroBar('Oqsil', s.t.p, s.macros.p, 'var(--protein)', 'var(--protein)') +
-      macroBar('Yogʻ', s.t.f, s.macros.f, 'var(--fat)', 'var(--fat)') +
-      macroBar('Uglevod', s.t.c, s.macros.c, 'var(--carb)', 'var(--carb-bar)') +
-      '</div></section>';
+    h += '<section class="card grid3" style="display:grid;padding:14px 16px">' +
+      macroRing('Oqsil', s.t.p, s.macros.p, 'var(--protein)', 'var(--protein-soft)') +
+      macroRing('Yogʻ', s.t.f, s.macros.f, 'var(--fat)', 'var(--fat-soft)') +
+      macroRing('Uglevod', s.t.c, s.macros.c, 'var(--carb)', 'var(--carb-soft)') + '</section>';
+
+    var empty = MEALS.filter(function (m) { return !s.t.meals[m[0]]; }).length;
+    var suggest = left > 0 && empty ? Math.round(left / empty / 10) * 10 : null;
+    h += '<section class="card flush">' + MEALS.map(function (m) {
+      var items = db.log.filter(function (e) { return e.date === key && e.meal === m[0]; });
+      var ic = MEAL_ICON[m[0]];
+      var lead = '<span class="meal-ic" style="background:' + ic[1] + ';color:' + ic[2] + '">' + icon(ic[0], 20) + '</span>';
+      if (items.length) {
+        return '<a class="meal-row" href="#ovqat">' + lead + '<span class="grow stack" style="gap:0"><b>' + m[1] + '</b><span class="small muted ellipsis">' +
+          esc(uniqueNames(items)) + '</span></span><span class="rnd num" style="font-size:17px;font-weight:600;margin-right:6px">' +
+          n0(s.t.meals[m[0]]) + '</span></a>';
+      }
+      return '<div class="meal-row">' + lead + '<span class="grow stack" style="gap:0"><b>' + m[1] + '</b><span class="small muted">' +
+        (suggest ? 'Tavsiya: ~' + n0(suggest) + ' kkal' : 'Hali yoʻq') + '</span></span><a class="plus" href="#qoshish/' + m[0] + '" aria-label="' + MEAL_TO[m[0]] + ' qoʻshish">+</a></div>';
+    }).join('') + '</section>';
 
     var mins = E.weeklyActiveMinutes(db.workouts, key), rate = E.trendRate(s.trend, key, 14);
     h += '<section class="grid2">' +
-      '<a class="tile" href="#mashq"><span class="small muted">Faollik (7 kun)</span><span class="v num">' + mins + ' <small>daq</small></span>' +
+      '<a class="tile" href="#mashq"><span class="small muted">Faollik (7 kun)</span><span class="v rnd num">' + mins + ' <small>daq</small></span>' +
       '<span class="tiny ' + (mins >= 150 ? 'ok' : 'muted') + '">Maqsad: 150 daq</span></a>' +
-      '<a class="tile" href="#tana"><span class="small muted">Vazn (trend)</span><span class="v num">' + kg1(s.trend.latest) + ' <small>kg</small></span>' +
-      '<span class="tiny ' + (rate != null && rate < 0 ? 'ok' : 'muted') + '">' + (rate == null ? 'Tortilib boring' : skg(rate) + ' haftada') + '</span></a>' +
-      '</section>';
+      '<a class="tile" href="#tana"><span class="small muted">Vazn (trend)</span><span class="v rnd num">' + kg1(s.trend.latest) + ' <small>kg</small></span>' +
+      '<span class="tiny ' + (rate != null && rate < 0 ? 'ok' : 'muted') + '">' + (rate == null ? 'Tortilib boring' : skg(rate) + ' haftada') + '</span></a></section>';
 
     var checks = db.checks[key] || {}, done = db.habits.filter(function (x) { return checks[x.id]; }).length;
     h += '<a class="card" href="#odatlar" style="flex-direction:row;align-items:center;text-decoration:none;color:inherit;padding:14px 16px">' +
       '<span class="grow stack" style="gap:6px"><b>Bugungi odatlar · ' + done + '/' + db.habits.length + '</b><span class="dots7" aria-hidden="true">' +
       db.habits.map(function (x) { return '<span class="' + (checks[x.id] ? 'on' : '') + '"></span>'; }).join('') + '</span></span>' +
       '<span class="muted">' + icon('chev', 18, 2.5) + '</span></a>';
-
-    h += '<div class="grid3"><a class="btn sm" href="#qoshish/' + mealNow() + '">+ Ovqat</a><a class="btn sm secondary" href="#mashq">+ Mashq</a><a class="btn sm secondary" href="#tana">+ Vazn</a></div>';
     return h;
   }
 
-  function macroBar(label, val, target, color, barColor) {
-    var pct = target ? Math.min(100, Math.round(val / target * 100)) : 0;
-    return '<div class="stack" style="gap:6px"><span class="small" style="font-weight:600;color:' + color + '">' + label + '</span>' +
-      '<div class="bar"><div style="width:' + pct + '%;background:' + barColor + '"></div></div>' +
-      '<span class="small num"><b>' + val + '</b> <span class="muted">/ ' + target + ' g</span></span></div>';
+  function uniqueNames(items) {
+    var seen = {};
+    return items.map(function (e) { return e.name; }).filter(function (n) { return seen[n] ? false : (seen[n] = true); }).join(', ');
   }
 
-  function mealNow() {
-    var h = new Date().getHours();
-    return h < 11 ? 'b' : h < 16 ? 'l' : h < 18 ? 's' : 'd';
+  function macroRing(label, val, target, color, soft) {
+    var C = 2 * Math.PI * 16, pct = target ? Math.min(1, val / target) : 0;
+    return '<div class="row" style="gap:8px;min-width:0"><svg width="40" height="40" viewBox="0 0 40 40" role="img" aria-label="' + label + ' ' + Math.round(pct * 100) + ' foiz" style="flex-shrink:0">' +
+      '<circle cx="20" cy="20" r="16" fill="none" stroke="' + soft + '" stroke-width="5"/><circle cx="20" cy="20" r="16" fill="none" stroke="' + color +
+      '" stroke-width="5" stroke-linecap="round" stroke-dasharray="' + (pct * C).toFixed(1) + ' ' + C.toFixed(1) + '" transform="rotate(-90 20 20)"/></svg>' +
+      '<div class="stack" style="gap:0;min-width:0"><span class="tiny" style="font-weight:600;color:' + color + '">' + label + '</span><span class="rnd num small"><b>' + val +
+      '</b><span class="muted">/' + target + '</span></span></div></div>';
   }
+
+  // ---------- food log ----------
 
   function viewFood() {
     var key = ui.day || today(), s = snapshot(key), isToday = key === today(), h = '';
-    h += '<header class="head"><div><div class="row" style="gap:4px">' +
-      '<button class="icon-btn" data-act="dayShift" data-v="-1" aria-label="Oldingi kun" style="font-size:22px">‹</button>' +
+    h += '<header class="head"><div><div class="row" style="gap:6px">' +
+      '<button class="icon-btn" data-act="dayShift" data-v="-1" aria-label="Oldingi kun">‹</button>' +
       '<span class="eyebrow">' + (isToday ? 'Bugun' : dayLabel(key)) + '</span>' +
-      (isToday ? '' : '<button class="icon-btn" data-act="dayShift" data-v="1" aria-label="Keyingi kun" style="font-size:22px">›</button>') +
-      '</div><h1>Ovqat</h1></div><a class="icon-btn fill" href="#qoshish/' + (isToday ? mealNow() : 'l') + '" aria-label="Ovqat qoʻshish">+</a></header>';
+      (isToday ? '' : '<button class="icon-btn" data-act="dayShift" data-v="1" aria-label="Keyingi kun">›</button>') +
+      '</div><h1>Ovqat</h1></div></header>';
 
     var pct = Math.min(100, Math.round(s.t.kcal / s.b.budget * 100));
-    h += '<div class="card" style="padding:12px 16px;gap:8px"><div class="kv small"><span class="muted">Isteʼmol / byudjet</span><b class="num">' +
-      n0(s.t.kcal) + ' / ' + n0(s.b.budget) + ' kkal</b></div><div class="bar" style="background:var(--energy-soft)"><div style="width:' + pct + '%;background:var(--energy)"></div></div>' +
+    h += '<div class="card" style="padding:14px 16px;gap:8px"><div class="between small"><span class="muted">Isteʼmol / byudjet</span><b class="rnd num">' +
+      n0(s.t.kcal) + ' / ' + n0(s.b.budget) + ' kkal</b></div><div class="bar"><div style="width:' + pct + '%;background:var(--energy-bar)"></div></div>' +
       '<div class="grid3 tiny num"><span style="color:var(--protein)">Oqsil ' + s.t.p + ' g</span><span class="center" style="color:var(--fat)">Yogʻ ' + s.t.f + ' g</span><span style="text-align:right;color:var(--carb)">Uglevod ' + s.t.c + ' g</span></div></div>';
 
     MEALS.forEach(function (m) {
       var items = db.log.filter(function (e) { return e.date === key && e.meal === m[0]; });
-      h += '<section class="card" style="padding:8px 16px;gap:0"><div class="meal-head"><b>' + m[1] + '</b><span class="num muted small">' + n0(s.t.meals[m[0]] || 0) + ' kkal</span></div>';
+      h += '<section class="card" style="padding:6px 16px;gap:0"><div class="meal-head"><b>' + m[1] + '</b><span class="rnd num muted small">' + n0(s.t.meals[m[0]] || 0) + ' kkal</span></div>';
       items.forEach(function (e) {
-        h += '<a class="entry" href="#yozuv/' + esc(e.id) + '" style="color:inherit;text-decoration:none"><span class="grow">' + esc(e.name) +
-          (e.grams ? ' <span class="p">· ' + esc(e.portion || (e.grams + ' g')) + '</span>' : '') + '</span><span class="num">' + n0(e.kcal) + '</span></a>';
+        h += '<a class="entry" href="#yozuv/' + esc(e.id) + '"><span class="grow">' + esc(e.name) +
+          (e.grams ? ' <span class="p">· ' + esc(e.portion || (e.grams + ' g')) + '</span>' : '') + '</span><span class="rnd num">' + n0(e.kcal) + '</span></a>';
       });
       h += '<a class="add-link" href="#qoshish/' + m[0] + '">+ Qoʻshish</a></section>';
     });
     return h;
   }
 
-  function viewAdd(meal) {
-    if (MEAL_NAME[meal]) ui.addMeal = meal;
-    var h = '<div class="between"><a class="back" href="#ovqat" data-act="resetAdd">‹ Bekor</a><b>' + MEAL_TO[ui.addMeal] + ' qoʻshish</b><span style="width:60px"></span></div>';
+  // ---------- add food ----------
 
+  // Most used foods over the last 60 days, each with the grams last used.
+  function frequentFoods(n) {
+    var from = E.addDays(today(), -60), stats = {};
+    db.log.forEach(function (e) {
+      if (!e.foodId || !e.grams || e.date < from) return;
+      var s = stats[e.foodId] = stats[e.foodId] || { count: 0, grams: e.grams, last: '' };
+      s.count++;
+      if (e.date >= s.last) { s.last = e.date; s.grams = e.grams; }
+    });
+    var list = Object.keys(stats).map(function (id) { return { food: findFood(id), grams: stats[id].grams, count: stats[id].count }; })
+      .filter(function (x) { return x.food; }).sort(function (a, b) { return b.count - a.count; });
+    STARTER.forEach(function (s) {
+      if (list.length < n && !list.some(function (x) { return x.food.id === s[0]; })) list.push({ food: findFood(s[0]), grams: s[1], count: 0 });
+    });
+    return list.slice(0, n);
+  }
+
+  // The latest earlier day that has this meal, to repeat it in one tap.
+  function lastMeal(meal, key) {
+    var best = null;
+    db.log.forEach(function (e) { if (e.meal === meal && e.date < key && (!best || e.date > best)) best = e.date; });
+    if (!best) return null;
+    var items = db.log.filter(function (e) { return e.meal === meal && e.date === best; });
+    return { date: best, items: items, kcal: items.reduce(function (a, e) { return a + e.kcal; }, 0) };
+  }
+
+  function viewAdd(meal) {
+    // the route picks the meal once; later re-renders keep the user's choice
+    if (MEAL_NAME[meal] && ui.addRoute !== meal) { ui.addMeal = meal; ui.addRoute = meal; }
+    var key = ui.day || today(), mk = E.dayTotals(db.log, key).meals[ui.addMeal] || 0;
+    var h = '<div class="add-head"><a class="pill-btn glass" href="#ovqat" data-act="resetAdd">Yopish</a>' +
+      '<button class="pill-btn glass meal-pill" data-act="mealMenu" aria-expanded="' + ui.mealMenu + '">' + MEAL_NAME[ui.addMeal] +
+      ' <span class="muted rnd num" style="font-weight:500">· ' + n0(mk) + ' kkal</span>' + icon('down', 12, 3) + '</button></div>';
+    if (ui.mealMenu) {
+      h += '<div class="menu glass" role="group" aria-label="Ovqat vaqti">' + MEALS.map(function (m) {
+        return '<button data-act="addMeal" data-v="' + m[0] + '" aria-pressed="' + (ui.addMeal === m[0]) + '">' + m[1] + (ui.addMeal === m[0] ? icon('check', 16, 3) : '') + '</button>';
+      }).join('') + '</div>';
+    }
     if (ui.form === 'food') return h + customFoodForm();
     if (ui.form === 'quick') return h + quickForm();
-
-    var food = ui.pick ? findFood(ui.pick) : null;
-    if (food) return h + portionPanel(food);
-
-    h += '<label class="search">' + icon('search', 18, 2.2) + '<input type="search" data-field="query" placeholder="Qidirish: palov, non, tuxum…" value="' + esc(ui.query) + '" aria-label="Ovqat qidirish" autocomplete="off"></label>';
-    h += '<div class="grid2"><button class="btn sm secondary" data-act="form" data-v="quick">Tezkor kkal</button><button class="btn sm secondary" data-act="form" data-v="food">Yangi mahsulot</button></div>';
-    h += '<div id="results" class="stack">' + resultsHtml() + '</div>';
+    h += '<div id="results" class="stack" style="gap:16px">' + resultsHtml() + '</div>';
+    h += '<label class="search-float glass">' + icon('search', 20, 2.4) +
+      '<input type="search" data-field="query" placeholder="Ovqat qidiring" value="' + esc(ui.query) + '" aria-label="Ovqat qidiring" autocomplete="off" enterkeyhint="search"></label>';
     return h;
   }
 
   function resultsHtml() {
-    var q = norm(ui.query.trim()), list = allFoods(), h = '';
+    var q = norm(ui.query.trim()), h = '';
     if (q) {
-      list = list.filter(function (f) { return norm(f.name).indexOf(q) >= 0; });
-      if (!list.length) return '<div class="card empty"><span class="muted small">Topilmadi. “Yangi mahsulot” orqali qoʻshing yoki “Tezkor kkal” bilan faqat kaloriyani yozing.</span></div>';
-    } else {
-      var seen = {}, recent = [];
-      db.log.slice().reverse().forEach(function (e) {
-        if (e.foodId && !seen[e.foodId] && recent.length < 6) { var f = findFood(e.foodId); if (f) { seen[e.foodId] = 1; recent.push(f); } }
-      });
-      if (recent.length) h += '<h2 class="section-title" style="font-size:17px">Soʻnggi</h2>' + recent.map(resultRow).join('') + '<h2 class="section-title" style="font-size:17px">Hammasi</h2>';
+      var list = allFoods().filter(function (f) { return norm(f.name).indexOf(q) >= 0; });
+      if (!list.length) {
+        return '<div class="card empty"><span class="muted small">“' + esc(ui.query.trim()) + '” topilmadi.</span>' + extraButtons() + '</div>';
+      }
+      return '<div class="card flush">' + list.map(function (f) { return foodRow(f, unitOf(f)[1]); }).join('') + '</div>' + extraButtons();
     }
-    return h + list.map(resultRow).join('');
+    var freq = frequentFoods(10);
+    h += '<section class="stack" style="gap:8px"><span class="section-title">Bir bosishda</span><div class="qrow">' + freq.slice(0, 5).map(function (x) {
+      var v = E.foodValues(x.food, x.grams);
+      return '<button class="qchip glass" data-act="quickAdd" data-v="' + esc(x.food.id) + '" data-g="' + x.grams + '" aria-label="' + esc(x.food.name) + ' qoʻshish, ' + v.kcal + ' kkal">' +
+        '<span class="stack" style="gap:0"><b style="font-size:15px">' + esc(x.food.name) + '</b><span class="tiny muted num">' + esc(portionLabel(x.food, x.grams)) + ' · ' + v.kcal +
+        '</span></span><span class="pl" aria-hidden="true">+</span></button>';
+    }).join('') + '</div></section>';
+
+    var last = lastMeal(ui.addMeal, ui.day || today());
+    if (last) {
+      var isYesterday = last.date === E.addDays(ui.day || today(), -1);
+      h += '<section class="card" style="flex-direction:row;align-items:center;padding:10px 10px 10px 16px;gap:12px">' +
+        '<span class="meal-ic" style="background:var(--accent-soft);color:var(--accent)">' + icon('repeat', 18, 2.2) + '</span>' +
+        '<span class="grow stack" style="gap:0"><b style="font-size:15px">' + (isYesterday ? 'Kechagi ' + MEAL_NAME[ui.addMeal].toLowerCase() : MEAL_NAME[ui.addMeal] + ', ' + dayLabel(last.date).split(', ')[1]) +
+        '</b><span class="tiny muted ellipsis">' + esc(uniqueNames(last.items)) + ' · ' + n0(last.kcal) + ' kkal</span></span>' +
+        '<button class="btn sm secondary" data-act="repeatMeal" data-v="' + last.date + '">Takrorlash</button></section>';
+    }
+
+    h += '<section class="stack" style="gap:8px"><span class="section-title">' + (freq.some(function (x) { return x.count; }) ? 'Siz koʻp yeydiganlar' : 'Mashhur taomlar') + '</span>' +
+      '<div class="card flush">' + freq.map(function (x) { return foodRow(x.food, x.grams); }).join('') + '</div></section>';
+    return h + extraButtons();
   }
 
-  function resultRow(f) {
-    return '<button class="res" data-act="pickFood" data-v="' + esc(f.id) + '"><span class="grow stack" style="gap:2px"><b style="font-size:15px">' + esc(f.name) + '</b>' +
-      '<span class="tiny muted num">100 g · ' + n0(f.kcal) + ' kkal · O ' + f.p + ' · Y ' + f.f + ' · U ' + f.c + '</span></span>' +
-      (f.uz ? '<span class="tag">taxminiy</span>' : f.custom ? '<span class="tag">meniki</span>' : '') + '</button>';
+  function extraButtons() {
+    return '<div class="grid2"><button class="btn sm secondary" data-act="form" data-v="quick">Tezkor kkal</button><button class="btn sm secondary" data-act="form" data-v="food">Yangi mahsulot</button></div>';
   }
 
-  function portionPanel(food) {
-    var portions = (food.portions || []).concat([['100 g', 100]]);
-    if (ui.grams == null) ui.grams = portions[0][1];
-    var h = '<section class="card"><div class="between"><h2 style="font-size:20px">' + esc(food.name) + '</h2>' + (food.uz ? '<span class="tag">taxminiy</span>' : '') + '</div>';
-    h += '<div class="grid3">' + portions.map(function (p) {
-      return '<button class="portion" data-act="portion" data-v="' + p[1] + '" aria-pressed="' + (ui.grams === p[1]) + '"><b>' + esc(p[0]) + '</b><span>' + p[1] + ' g</span></button>';
-    }).join('') + '</div>';
-    h += '<label class="field"><span>Gramm</span><input class="input num" type="number" inputmode="decimal" min="1" max="3000" data-field="grams" value="' + ui.grams + '"></label>';
-    h += '<div id="pv">' + valuesHtml(food, ui.grams) + '</div>';
-    h += '<div class="seg" style="grid-template-columns:repeat(4,minmax(0,1fr))" role="group" aria-label="Ovqat vaqti">' + MEALS.map(function (m) {
-      return '<button data-act="addMeal" data-v="' + m[0] + '" aria-pressed="' + (ui.addMeal === m[0]) + '">' + m[1].split(' ')[0] + '</button>';
-    }).join('') + '</div>';
-    if (food.uz) h += '<span class="tiny muted">Uy retsepti boʻyicha taxminiy qiymat (±20–30%). Oʻz retseptingizni “Yangi mahsulot” orqali kiritsangiz, aniqroq boʻladi.</span>';
-    h += '<button class="btn block" data-act="addFood">Qoʻshish</button></section>';
-    h += '<button class="btn ghost" data-act="unpick">‹ Boshqa ovqat tanlash</button>';
-    return h;
-  }
-
-  function valuesHtml(food, grams) {
-    var v = E.foodValues(food, grams || 0);
-    return '<div class="between" style="margin-bottom:8px"><span class="muted">Kaloriya</span><b class="num" style="font-size:28px;color:var(--energy)">' + n0(v.kcal) + ' <span class="small muted">kkal</span></b></div>' +
-      '<div class="grid3"><div class="macro p"><b class="num">' + v.p + ' g</b><span>Oqsil</span></div><div class="macro f"><b class="num">' + v.f + ' g</b><span>Yogʻ</span></div><div class="macro c"><b class="num">' + v.c + ' g</b><span>Uglevod</span></div></div>';
+  function foodRow(f, grams) {
+    var v = E.foodValues(f, grams);
+    return '<div class="frow"><button class="frow-main" data-act="pickFood" data-v="' + esc(f.id) + '"><b style="font-size:16px">' + esc(f.name) + '</b>' +
+      '<span class="small muted">' + esc(portionLabel(f, grams)) + (f.uz ? ' · taxminiy' : f.custom ? ' · meniki' : '') + '</span></button>' +
+      '<span class="rnd num muted" style="font-size:16px;font-weight:600">' + v.kcal + '</span>' +
+      '<button class="plus" data-act="quickAdd" data-v="' + esc(f.id) + '" data-g="' + grams + '" aria-label="' + esc(f.name) + ' qoʻshish">+</button></div>';
   }
 
   function customFoodForm() {
@@ -267,7 +343,7 @@
       '<label class="field"><span>Oqsil (g)</span><input class="input num" id="cf-p" type="number" inputmode="decimal"></label>' +
       '<label class="field"><span>Yogʻ (g)</span><input class="input num" id="cf-f" type="number" inputmode="decimal"></label>' +
       '<label class="field"><span>Uglevod (g)</span><input class="input num" id="cf-c" type="number" inputmode="decimal"></label></div>' +
-      '<div class="grid2"><label class="field"><span>Porsiya nomi</span><input class="input" id="cf-pl" placeholder="1 kosa"></label>' +
+      '<div class="grid2"><label class="field"><span>Porsiya nomi</span><input class="input" id="cf-pl" placeholder="Oʻrta kosa"></label>' +
       '<label class="field"><span>Porsiya (g)</span><input class="input num" id="cf-pg" type="number" inputmode="decimal"></label></div>' +
       '<button class="btn block" data-act="saveCustom">Saqlash va tanlash</button><button class="btn ghost" data-act="form" data-v="">Orqaga</button></section>';
   }
@@ -277,6 +353,80 @@
       '<label class="field"><span>Nomi (ixtiyoriy)</span><input class="input" id="q-name" placeholder="Masalan: toʻy oshi"></label>' +
       '<label class="field"><span>Kaloriya (kkal)</span><input class="input num" id="q-kcal" type="number" inputmode="numeric"></label>' +
       '<button class="btn block" data-act="saveQuick">Qoʻshish</button><button class="btn ghost" data-act="form" data-v="">Orqaga</button></section>';
+  }
+
+  // ---------- portion sheet ----------
+
+  function sheetValues(food, grams) {
+    var u = unitOf(food), v = E.foodValues(food, grams || 0);
+    var pk = v.p * 4, fk = v.f * 9, ck = v.c * 4, tot = pk + fk + ck || 1;
+    return {
+      v: v, count: frac(grams / u[1]), unit: u[0].toLowerCase(),
+      split: [Math.round(pk / tot * 100), Math.round(fk / tot * 100), Math.round(ck / tot * 100)],
+      cta: MEAL_TO[ui.addMeal] + ' qoʻshish · ' + v.kcal + ' kkal'
+    };
+  }
+
+  function sheetHtml() {
+    var food = findFood(ui.pick);
+    if (!food) return '';
+    var u = unitOf(food), sv = sheetValues(food, ui.grams);
+    var h = '<button class="scrim" data-act="unpick" aria-label="Yopish"></button><section class="sheet" role="dialog" aria-modal="true" aria-label="' + esc(food.name) + ' porsiyasi">' +
+      '<span class="grabber" aria-hidden="true"></span>' +
+      '<div class="sheet-head"><button class="circ" data-act="unpick" aria-label="Yopish">' + icon('close', 16, 3) + '</button>' +
+      '<div class="stack center" style="gap:2px;align-items:center"><b style="font-size:18px">' + esc(food.name) + '</b>' +
+      (food.uz ? '<span class="tiny" style="font-weight:600;color:var(--carb)">taxminiy · uy retsepti</span>' : '<span class="tiny muted">100 g · ' + food.kcal + ' kkal</span>') + '</div><span></span></div>' +
+      '<div class="rnd num" style="display:flex;align-items:baseline;justify-content:center;gap:6px"><span id="sv-kcal" style="font-size:64px;font-weight:600;letter-spacing:-2px;line-height:1;color:var(--energy)">' +
+      sv.v.kcal + '</span><span class="muted" style="font-size:20px">kkal</span></div>' +
+      '<div class="stepper"><button class="round" data-act="step" data-v="-1" aria-label="Yarim porsiya kam">−</button>' +
+      '<button data-act="gramEdit" style="border:none;background:transparent;display:flex;flex-direction:column;align-items:center;min-height:56px;justify-content:center">' +
+      '<b class="rnd num" style="font-size:26px"><span id="sv-count">' + sv.count + '</span> <span style="font-size:17px;font-weight:600">' + esc(sv.unit) + '</span></b>' +
+      '<span class="small muted num"><span id="sv-grams">' + ui.grams + '</span> g · oʻzgartirish</span></button>' +
+      '<button class="round" data-act="step" data-v="1" aria-label="Yarim porsiya koʻp">+</button></div>';
+    if (ui.gramEdit) {
+      h += '<label class="field"><span>Gramm</span><input class="input num" type="number" inputmode="decimal" min="1" max="3000" data-field="grams" value="' + ui.grams + '"></label>';
+    }
+    h += '<div class="grid4">' + [0.5, 1, 1.5, 2].map(function (k) {
+      var g = Math.round(u[1] * k);
+      return '<button class="frac" data-act="portion" data-v="' + g + '" aria-pressed="' + (ui.grams === g) + '">' + frac(k) + '</button>';
+    }).join('') + '</div>';
+    h += '<div class="stack" style="gap:8px"><div class="stack-bar" id="sv-bar" role="img" aria-label="Kaloriya tarkibi">' + splitBar(sv.split) + '</div>' +
+      '<div class="grid3 small num" id="sv-macros">' + macroLegend(sv.v) + '</div></div>';
+    h += '<div class="seg" style="grid-template-columns:repeat(4,minmax(0,1fr))" role="group" aria-label="Ovqat vaqti">' + MEALS.map(function (m) {
+      return '<button data-act="addMeal" data-v="' + m[0] + '" aria-pressed="' + (ui.addMeal === m[0]) + '">' + m[1].split(' ')[0] + '</button>';
+    }).join('') + '</div>';
+    h += '<button class="btn block" data-act="addFood" id="sv-cta" style="min-height:58px">' + sv.cta + '</button></section>';
+    return h;
+  }
+
+  function splitBar(s) {
+    return '<div style="width:' + s[0] + '%;background:var(--protein)"></div><div style="width:' + s[1] + '%;background:var(--fat)"></div><div style="width:' + s[2] + '%;background:var(--carb-bar)"></div>';
+  }
+
+  function macroLegend(v) {
+    return '<span><b style="color:var(--protein)">' + v.p + ' g</b> <span class="muted">oqsil</span></span><span class="center"><b style="color:var(--fat)">' + v.f +
+      ' g</b> <span class="muted">yogʻ</span></span><span style="text-align:right"><b style="color:var(--carb)">' + v.c + ' g</b> <span class="muted">uglevod</span></span>';
+  }
+
+  function updateSheet() {
+    var food = findFood(ui.pick);
+    if (!food || !document.getElementById('sv-kcal')) return;
+    var sv = sheetValues(food, ui.grams || 0);
+    document.getElementById('sv-kcal').textContent = sv.v.kcal;
+    document.getElementById('sv-count').textContent = sv.count;
+    document.getElementById('sv-grams').textContent = ui.grams || 0;
+    document.getElementById('sv-bar').innerHTML = splitBar(sv.split);
+    document.getElementById('sv-macros').innerHTML = macroLegend(sv.v);
+    document.getElementById('sv-cta').textContent = sv.cta;
+    Array.prototype.forEach.call(document.querySelectorAll('.frac'), function (b) { b.setAttribute('aria-pressed', String(Number(b.getAttribute('data-v')) === ui.grams)); });
+  }
+
+  // ---------- entry edit ----------
+
+  function valuesHtml(food, grams) {
+    var v = E.foodValues(food, grams || 0);
+    return '<div class="between" style="margin-bottom:8px"><span class="muted">Kaloriya</span><b class="rnd num" style="font-size:28px;color:var(--energy)">' + n0(v.kcal) + ' <span class="small muted">kkal</span></b></div>' +
+      '<div class="grid3"><div class="macro p"><b class="num">' + v.p + ' g</b><span>Oqsil</span></div><div class="macro f"><b class="num">' + v.f + ' g</b><span>Yogʻ</span></div><div class="macro c"><b class="num">' + v.c + ' g</b><span>Uglevod</span></div></div>';
   }
 
   function viewEntry(id) {
@@ -303,11 +453,13 @@
     return h;
   }
 
+  // ---------- workout ----------
+
   function viewWorkout() {
     var key = today(), h = '', s = snapshot(key);
     var mins = E.weeklyActiveMinutes(db.workouts, key);
     h += header('Oxirgi 7 kun', 'Mashq');
-    h += '<section class="card"><div class="between"><span class="num"><b style="font-size:24px">' + mins + '</b> <span class="muted">/ 150 daq</span></span>' +
+    h += '<section class="card"><div class="between"><span class="rnd num"><b style="font-size:26px">' + mins + '</b> <span class="muted">/ 150 daq</span></span>' +
       '<span class="tiny muted">JSST: haftada 150–300 daq</span></div><div class="week-bars">';
     for (var i = 6; i >= 0; i--) {
       var k = E.addDays(key, -i), m = db.workouts.filter(function (w) { return w.date === k; }).reduce(function (a, w) { return a + w.min; }, 0);
@@ -319,8 +471,8 @@
     var todays = db.workouts.filter(function (w) { return w.date === key; });
     if (todays.length) {
       h += '<section class="card tight">' + todays.map(function (w, idx) {
-        return '<div class="row" style="min-height:52px' + (idx ? ';border-top:1px solid var(--line)' : '') + '"><span class="grow stack" style="gap:1px"><b style="font-size:15px">' + esc(w.name) +
-          '</b><span class="tiny muted">' + w.min + ' daq · ' + LEVELS[w.level].toLowerCase() + '</span></span><span class="num ok" style="font-weight:600">+' + n0(w.kcal) +
+        return '<div class="row" style="min-height:54px' + (idx ? ';border-top:1px solid var(--line)' : '') + '"><span class="grow stack" style="gap:1px"><b style="font-size:15px">' + esc(w.name) +
+          '</b><span class="tiny muted">' + w.min + ' daq · ' + LEVELS[w.level].toLowerCase() + '</span></span><span class="rnd num ok" style="font-weight:600">+' + n0(w.kcal) +
           ' kkal</span><button class="x-btn" data-act="deleteWorkout" data-v="' + esc(w.id) + '" aria-label="Oʻchirish">×</button></div>';
       }).join('') + '</section>';
     }
@@ -330,18 +482,20 @@
     h += '<section class="card"><h2>Mashq qoʻshish</h2><div class="grid4" style="gap:6px">' + window.ACTIVITIES.map(function (a) {
       return '<button class="type" data-act="wType" data-v="' + a.id + '" aria-pressed="' + (a.id === ui.wType) + '">' + a.name + '</button>';
     }).join('') + '</div>' +
-      '<div class="between"><button class="round" data-act="wMin" data-v="-5" aria-label="5 daqiqa kam">−</button><span class="num" style="font-size:28px;font-weight:600">' + ui.wMin +
+      '<div class="stepper" style="min-height:72px"><button class="round" data-act="wMin" data-v="-5" aria-label="5 daqiqa kam">−</button><span class="rnd num" style="font-size:28px;font-weight:600">' + ui.wMin +
       ' <span class="muted" style="font-size:15px;font-weight:500">daqiqa</span></span><button class="round" data-act="wMin" data-v="5" aria-label="5 daqiqa koʻp">+</button></div>' +
       '<div class="seg" style="grid-template-columns:repeat(3,minmax(0,1fr))" role="group" aria-label="Jadallik">' + LEVELS.map(function (l, i) {
         return '<button data-act="wLevel" data-v="' + i + '" aria-pressed="' + (ui.wLevel === i) + '">' + l + '</button>';
       }).join('') + '</div>' +
       '<div class="seg" style="grid-template-columns:repeat(2,minmax(0,1fr))" role="group" aria-label="Kun"><button data-act="wDay" data-v="0" aria-pressed="' + (ui.wDay === 0) +
       '">Bugun</button><button data-act="wDay" data-v="-1" aria-pressed="' + (ui.wDay === -1) + '">Kecha</button></div>' +
-      '<div class="row"><span class="grow small muted">≈ <b style="color:var(--text);font-size:17px">' + n0(kcal) + ' kkal</b> · MET ' + met.toFixed(1).replace('.', ',') + '</span>' +
+      '<div class="row"><span class="grow small muted">≈ <b class="rnd" style="color:var(--text);font-size:18px">' + n0(kcal) + ' kkal</b> · MET ' + met.toFixed(1).replace('.', ',') + '</span>' +
       '<button class="btn sm" data-act="saveWorkout">Saqlash</button></div>' +
       '<span class="tiny muted">Faqat dam holatidan ortiq sarf hisoblanadi, shuning uchun kaloriya ikki marta qoʻshilmaydi.</span></section>';
     return h;
   }
+
+  // ---------- body ----------
 
   function viewBody() {
     var key = today(), p = db.profile, h = '', trend = E.weightTrend(db.weights, key), lw = latestWeight();
@@ -357,7 +511,7 @@
       if (trend.map[k] != null) vals.push(trend.map[k]);
       db.weights.forEach(function (w) { if (w.date === k) vals.push(w.kg); });
     }
-    h += '<section class="card chart"><div class="between"><span class="num"><b style="font-size:28px">' + kg1(trend.latest) + '</b> <span class="muted">kg trend</span></span>' +
+    h += '<section class="card chart"><div class="between"><span class="rnd num"><b style="font-size:30px">' + kg1(trend.latest) + '</b> <span class="muted">kg trend</span></span>' +
       '<span class="small num ' + (rate != null && rate < 0 ? 'ok' : 'muted') + '" style="font-weight:600">' + (rate == null ? '' : skg(rate) + ' / hafta') + '</span></div>';
     if (vals.length >= 2) {
       var lo = Math.floor(Math.min.apply(null, vals) - 0.5), hi = Math.ceil(Math.max.apply(null, vals) + 0.5);
@@ -381,7 +535,7 @@
     var ms = db.measures.slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; });
     var last = ms[ms.length - 1] || {}, first = ms[0] || {};
     var fields = [['waist', 'Bel aylanasi'], ['chest', 'Koʻkrak aylanasi'], ['hip', 'Boʻksa aylanasi'], ['neck', 'Boʻyin aylanasi']];
-    h += '<h2 class="section-title">Oʻlchamlar (sm)</h2><section class="card"><div class="grid2">' + fields.map(function (f) {
+    h += '<span class="section-title">Oʻlchamlar (sm)</span><section class="card"><div class="grid2">' + fields.map(function (f) {
       var d = last[f[0]] != null && first[f[0]] != null && ms.length > 1 ? last[f[0]] - first[f[0]] : null;
       return '<label class="field"><span>' + f[1] + (d ? ' <b class="' + (d < 0 ? 'ok' : 'warm') + '">' + (d > 0 ? '+' : '') + kg1(d).replace(',0', '') + '</b>' : '') + '</span>' +
         '<input class="input num" id="m-' + f[0] + '" type="number" inputmode="decimal" step="0.5" value="' + (last[f[0]] != null ? last[f[0]] : '') + '"></label>';
@@ -393,21 +547,23 @@
     h += '<section class="card tight">' +
       ratioRow('Bel / boʻy', 'maqsad 0,50 dan kam', r1, r1 != null && r1 >= 0.5) +
       ratioRow('Bel / boʻksa', 'JSST: ' + (p.male ? 'erkak 0,90' : 'ayol 0,85') + ' gacha', r2, r2 != null && r2 > (p.male ? 0.9 : 0.85), true) +
-      '<div class="row" style="min-height:50px;border-top:1px solid var(--line)"><span class="grow stack" style="gap:0"><b style="font-size:15px">Tana yogʻi, taxminiy</b>' +
-      '<span class="tiny muted">US Navy formulasi · ±3–4% · boʻyin ' + (p.male ? '' : 'va boʻksa ') + 'kerak</span></span><b class="num">' + (bf == null ? '—' : bf + '%') + '</b></div></section>';
+      '<div class="row" style="min-height:54px;border-top:1px solid var(--line)"><span class="grow stack" style="gap:0"><b style="font-size:15px">Tana yogʻi, taxminiy</b>' +
+      '<span class="tiny muted">US Navy formulasi · ±3–4% · boʻyin ' + (p.male ? '' : 'va boʻksa ') + 'kerak</span></span><b class="rnd num">' + (bf == null ? '—' : bf + '%') + '</b></div></section>';
     return h;
   }
 
   function ratioRow(title, sub, v, high, border) {
-    return '<div class="row" style="min-height:50px' + (border ? ';border-top:1px solid var(--line)' : '') + '"><span class="grow stack" style="gap:0"><b style="font-size:15px">' + title +
-      '</b><span class="tiny muted">' + sub + '</span></span><b class="num ' + (v == null ? '' : high ? 'warm' : 'ok') + '">' + (v == null ? '—' : String(v.toFixed(2)).replace('.', ',')) + '</b></div>';
+    return '<div class="row" style="min-height:54px' + (border ? ';border-top:1px solid var(--line)' : '') + '"><span class="grow stack" style="gap:0"><b style="font-size:15px">' + title +
+      '</b><span class="tiny muted">' + sub + '</span></span><b class="rnd num ' + (v == null ? '' : high ? 'warm' : 'ok') + '">' + (v == null ? '—' : String(v.toFixed(2)).replace('.', ',')) + '</b></div>';
   }
+
+  // ---------- analysis ----------
 
   function viewAnalysis() {
     var key = today(), s = snapshot(key), h = '';
     var labels = { day: 'Bugun, ovqatlar boʻyicha', week: 'Oxirgi 7 kun', month: 'Oxirgi 30 kun', year: E.keyToDate(key).getFullYear() + ', oylik oʻrtacha' };
     h += header(labels[ui.period], 'Tahlil');
-    h += '<div class="seg" style="grid-template-columns:repeat(4,minmax(0,1fr))" role="group" aria-label="Davr">' + [['day', 'Kun'], ['week', 'Hafta'], ['month', 'Oy'], ['year', 'Yil']].map(function (p) {
+    h += '<div class="seg glass" style="grid-template-columns:repeat(4,minmax(0,1fr))" role="group" aria-label="Davr">' + [['day', 'Kun'], ['week', 'Hafta'], ['month', 'Oy'], ['year', 'Yil']].map(function (p) {
       return '<button data-act="period" data-v="' + p[0] + '" aria-pressed="' + (ui.period === p[0]) + '">' + p[1] + '</button>';
     }).join('') + '</div>';
 
@@ -431,15 +587,15 @@
     var W = 318, H = 150, n = bars.length, cw = W / n, bw = Math.min(28, cw * 0.62), out = '';
     bars.forEach(function (b, i) {
       var cx = cw * i + cw / 2;
-      if (b.intake != null) { var bh = b.intake / max * H; out += '<rect class="in" x="' + (cx - bw / 2).toFixed(1) + '" y="' + (H - bh).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) + '" rx="' + Math.min(5, bw / 2).toFixed(1) + '"/>'; }
+      if (b.intake != null) { var bh = b.intake / max * H; out += '<rect class="in" x="' + (cx - bw / 2).toFixed(1) + '" y="' + (H - bh).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) + '" rx="' + Math.min(6, bw / 2).toFixed(1) + '"/>'; }
       if (b.exp != null) out += '<rect class="ex" x="' + (cx - cw * 0.45).toFixed(1) + '" y="' + (H - b.exp / max * H - 1.5).toFixed(1) + '" width="' + (cw * 0.9).toFixed(1) + '" height="3" rx="1.5"/>';
       if (b.label) out += '<text class="axis" x="' + cx.toFixed(1) + '" y="' + (H + 14) + '" text-anchor="middle">' + b.label + '</text>';
     });
     h += '<section class="card chart"><div class="between"><h2>Energiya balansi</h2><span class="legend"><span><i style="background:var(--energy-bar)"></i>isteʼmol</span>' +
-      (ui.period === 'day' ? '' : '<span><i style="background:var(--accent-ink);height:3px"></i>sarf</span>') + '</span></div>' +
+      (ui.period === 'day' ? '' : '<span><i style="background:var(--accent);height:3px"></i>sarf</span>') + '</span></div>' +
       '<svg viewBox="0 0 ' + W + ' ' + (H + 18) + '" role="img" aria-label="Isteʼmol va sarf ustunlari"><line class="grid" x1="0" x2="' + W + '" y1="' + H + '" y2="' + H + '"/>' + out + '</svg></section>';
     h += '<section class="grid3">' + tiles.map(function (t, i) {
-      return '<div class="tile"><span class="tiny muted">' + t[0] + '</span><b class="num' + (i === 2 ? ' ok' : '') + '" style="font-size:17px">' + t[1] + '</b></div>';
+      return '<div class="tile"><span class="tiny muted">' + t[0] + '</span><b class="rnd num' + (i === 2 ? ' ok' : '') + '" style="font-size:17px">' + t[1] + '</b></div>';
     }).join('') + '</section>';
 
     var formula = Math.round(E.baseExpenditure(s.p, s.kg) + avgWorkout(key, 21));
@@ -456,10 +612,10 @@
     var waist = ms.length > 1 ? ms[ms.length - 1].waist - ms[0].waist : null;
     var wt = s.trend.map[key] != null && s.trend.map[from] != null ? s.trend.map[key] - s.trend.map[from] : null;
     h += '<section class="grid4">' +
-      '<a class="tile" href="#mashq"><span class="tiny muted">Mashq</span><b class="num" style="font-size:15px">' + mins + ' daq</b></a>' +
-      '<a class="tile" href="#tana"><span class="tiny muted">Vazn</span><b class="num" style="font-size:15px">' + skg(wt) + '</b></a>' +
-      '<a class="tile" href="#tana"><span class="tiny muted">Bel</span><b class="num" style="font-size:15px">' + (waist == null ? '—' : (waist > 0 ? '+' : '') + kg1(waist).replace(',0', '') + ' sm') + '</b></a>' +
-      '<a class="tile" href="#odatlar"><span class="tiny muted">Odatlar</span><b class="num" style="font-size:15px">' + (E.habitScore(db.habits, db.checks, key, Math.min(days, 30)) || 0) + '%</b></a></section>';
+      '<a class="tile" href="#mashq"><span class="tiny muted">Mashq</span><b class="rnd num" style="font-size:15px">' + mins + ' daq</b></a>' +
+      '<a class="tile" href="#tana"><span class="tiny muted">Vazn</span><b class="rnd num" style="font-size:15px">' + skg(wt) + '</b></a>' +
+      '<a class="tile" href="#tana"><span class="tiny muted">Bel</span><b class="rnd num" style="font-size:15px">' + (waist == null ? '—' : (waist > 0 ? '+' : '') + kg1(waist).replace(',0', '') + ' sm') + '</b></a>' +
+      '<a class="tile" href="#odatlar"><span class="tiny muted">Odatlar</span><b class="rnd num" style="font-size:15px">' + (E.habitScore(db.habits, db.checks, key, Math.min(days, 30)) || 0) + '%</b></a></section>';
     return h;
   }
 
@@ -467,6 +623,8 @@
     var from = E.addDays(key, -(days - 1));
     return db.workouts.filter(function (w) { return w.date >= from && w.date <= key; }).reduce(function (a, w) { return a + w.kcal; }, 0) / days;
   }
+
+  // ---------- habits ----------
 
   function viewHabits() {
     var key = today(), checks = db.checks[key] || {}, h = '';
@@ -485,12 +643,14 @@
     return h;
   }
 
+  // ---------- profile ----------
+
   function viewProfile() {
     var first = !db.profile;
     if (!ui.pdraft) ui.pdraft = Object.assign({}, db.profile || DEFAULT_PROFILE);
     var d = ui.pdraft, h = '';
     h += (first ? '' : '<a class="back" href="#bugun">‹ Bugun</a>') + header(first ? 'Xush kelibsiz' : 'Shaxsiy sozlash', 'Maqsad');
-    if (first) h += '<section class="card soft small" style="line-height:20px">Kunlik kaloriya meʼyoringizni hisoblash uchun bir necha maʼlumot kerak. Hammasi faqat shu telefonda saqlanadi.</section>';
+    if (first) h += '<section class="card soft small" style="line-height:20px"><span>Kunlik kaloriya meʼyoringizni hisoblash uchun bir necha maʼlumot kerak. Hammasi faqat shu telefonda saqlanadi.</span></section>';
     h += '<section class="card">' +
       segRow('Jins', 'male', [[true, 'Erkak'], [false, 'Ayol']], d.male) +
       '<div class="grid3">' + numField('Yosh', 'age', d.age) + numField('Boʻy (sm)', 'height', d.height) + numField('Vazn (kg)', 'weight', d.weight) + '</div>' +
@@ -503,7 +663,7 @@
     h += '<section class="card" style="gap:4px">' +
       kv('Asosiy almashinuv (BMR)', n0(bmr) + ' kkal') + kv('Kundalik sarf (mashqsiz)', n0(base) + ' kkal') +
       kv(d.goal === 'gain' ? 'Profitsit' : 'Defitsit', signed(b.delta) + ' kkal' + (d.goal === 'keep' ? '' : ' · ≈' + kg1(Math.abs(b.delta) * 7 / E.KCAL_PER_KG) + ' kg/hafta')) +
-      '<div class="between" style="border-top:1px solid var(--line);min-height:48px"><b>Kunlik byudjet</b><b class="num" style="font-size:22px;color:var(--energy)">' + n0(b.budget) + ' kkal</b></div>' +
+      '<div class="between" style="border-top:1px solid var(--line);min-height:52px"><b>Kunlik byudjet</b><b class="rnd num" style="font-size:24px;color:var(--energy)">' + n0(b.budget) + ' kkal</b></div>' +
       kv('Oqsil maqsadi (1,6 g/kg)', E.proteinTarget(d.weight) + ' g') +
       (b.floored ? '<span class="tiny warm">Byudjet xavfsiz chegaraga (' + E.floorKcal(d) + ' kkal) koʻtarildi. Sekinroq surʼat tanlang.</span>' : '') +
       '<span class="tiny muted" style="margin-top:4px">Mifflin–St Jeor formulasi. Mashq kunlari byudjetga mashq sarfi qoʻshiladi. 3 haftadan soʻng ilova haqiqiy sarfingizni vazn trendidan aniqlaydi.</span></section>';
@@ -516,7 +676,7 @@
         (db.log.length ? '' : '<button class="btn ghost block" data-act="demo">Namuna maʼlumot bilan sinab koʻrish</button>') +
         '<button class="btn danger block" data-act="clearAll">Hamma maʼlumotni oʻchirish</button></section>';
     }
-    h += '<p class="tiny muted center" style="margin:0">Salomat 0.1 · tibbiy maslahat oʻrnini bosmaydi. Homiladorlik, qandli diabet yoki boshqa kasallik boʻlsa, shifokor bilan maslahatlashing.</p>';
+    h += '<p class="tiny muted center" style="margin:0">Salomat 0.2 · tibbiy maslahat oʻrnini bosmaydi. Homiladorlik, qandli diabet yoki boshqa kasallik boʻlsa, shifokor bilan maslahatlashing.</p>';
     return h;
   }
 
@@ -529,7 +689,7 @@
     return '<label class="field"><span>' + label + '</span><input class="input num" type="number" inputmode="decimal" data-pf="' + key + '" value="' + value + '"></label>';
   }
 
-  function kv(k, v) { return '<div class="between small" style="min-height:30px"><span class="muted">' + k + '</span><b class="num">' + v + '</b></div>'; }
+  function kv(k, v) { return '<div class="between small" style="min-height:32px"><span class="muted">' + k + '</span><b class="num">' + v + '</b></div>'; }
 
   // ---------- routing ----------
 
@@ -549,11 +709,15 @@
     document.getElementById('app').innerHTML = VIEWS[r.name](r.arg);
     var rk = r.name + '/' + (r.arg || '');
     if (ui.lastRoute !== rk) { window.scrollTo(0, 0); ui.lastRoute = rk; }
-    var tabs = document.getElementById('tabs');
-    tabs.parentElement.hidden = !db.profile;
+    var sheet = r.name === 'qoshish' && ui.pick && !ui.form ? sheetHtml() : '';
+    document.getElementById('sheet').innerHTML = sheet;
+    document.body.classList.toggle('sheet-open', !!sheet);
+    var dock = document.getElementById('dock'), tabs = document.getElementById('tabs');
+    dock.hidden = !db.profile || r.name === 'qoshish';
     if (!tabs.childElementCount) {
-      tabs.innerHTML = TABS.map(function (t) { return '<a href="#' + t[0] + '" data-tab="' + t[0] + '">' + icon(t[2]) + t[1] + '</a>'; }).join('');
+      tabs.innerHTML = TABS.map(function (t) { return '<a href="#' + t[0] + '" data-tab="' + t[0] + '">' + icon(t[2], 22, 2.2) + t[1] + '</a>'; }).join('');
     }
+    document.getElementById('fab').setAttribute('href', '#qoshish/' + mealNow());
     var active = TAB_OF[r.name] || r.name;
     Array.prototype.forEach.call(tabs.children, function (a) {
       if (a.getAttribute('data-tab') === active) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
@@ -570,10 +734,15 @@
     // logging food counts as the logging habit for that day
     var day = db.checks[entry.date] = db.checks[entry.date] || {};
     if (db.habits.some(function (x) { return x.id === 'log'; })) day.log = true;
-    save();
+    return entry.id;
   }
 
-  function resetAdd() { ui.pick = null; ui.grams = null; ui.form = null; ui.query = ''; }
+  function logFood(food, grams) {
+    var v = E.foodValues(food, grams), hit = (food.portions || []).filter(function (p) { return p[1] === grams; })[0];
+    return addLog({ date: ui.day || today(), meal: ui.addMeal, foodId: food.id, name: food.name, grams: grams, portion: hit ? hit[0] + ', ' + grams + ' g' : null, kcal: v.kcal, p: v.p, f: v.f, c: v.c });
+  }
+
+  function resetAdd() { ui.pick = null; ui.grams = null; ui.gramEdit = false; ui.form = null; ui.query = ''; ui.mealMenu = false; ui.addRoute = null; }
 
   var ACTIONS = {
     dayShift: function (el) {
@@ -581,18 +750,54 @@
       ui.day = k >= today() ? null : k; render();
     },
     resetAdd: function () { resetAdd(); go('#ovqat'); },
+    mealMenu: function () { ui.mealMenu = !ui.mealMenu; render(); },
     form: function (el) { ui.form = el.getAttribute('data-v') || null; render(); },
-    pickFood: function (el) { ui.pick = el.getAttribute('data-v'); ui.grams = null; render(); },
-    unpick: function () { ui.pick = null; ui.grams = null; render(); },
-    portion: function (el) { ui.grams = Number(el.getAttribute('data-v')); render(); },
-    addMeal: function (el) { ui.addMeal = el.getAttribute('data-v'); render(); },
+    pickFood: function (el) {
+      var f = findFood(el.getAttribute('data-v'));
+      if (!f) return;
+      var recent = frequentFoods(30).filter(function (x) { return x.food.id === f.id && x.count; })[0];
+      ui.pick = f.id; ui.grams = recent ? recent.grams : unitOf(f)[1]; ui.gramEdit = false; render();
+    },
+    unpick: function () { ui.pick = null; ui.grams = null; ui.gramEdit = false; render(); },
+    portion: function (el) { ui.grams = Number(el.getAttribute('data-v')); if (ui.pick) updateSheet(); else render(); },
+    step: function (el) {
+      var f = findFood(ui.pick), half = unitOf(f)[1] / 2;
+      ui.grams = Math.max(Math.round(half), Math.round((Math.round(ui.grams / half) + Number(el.getAttribute('data-v'))) * half));
+      updateSheet();
+    },
+    gramEdit: function () { ui.gramEdit = !ui.gramEdit; render(); var i = document.querySelector('.sheet [data-field=grams]'); if (i) i.focus(); },
+    addMeal: function (el) {
+      ui.addMeal = el.getAttribute('data-v'); ui.mealMenu = false;
+      if (ui.pick) {
+        Array.prototype.forEach.call(document.querySelectorAll('.sheet .seg button'), function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-v') === ui.addMeal)); });
+        updateSheet();
+      } else render();
+    },
+    quickAdd: function (el) {
+      var f = findFood(el.getAttribute('data-v')), g = Number(el.getAttribute('data-g'));
+      if (!f || !g) return;
+      var id = logFood(f, g); save();
+      toast(f.name + ' qoʻshildi · ' + E.foodValues(f, g).kcal + ' kkal', [id]); render();
+    },
+    repeatMeal: function (el) {
+      var from = el.getAttribute('data-v'), key = ui.day || today(), ids = [], kcal = 0;
+      db.log.filter(function (e) { return e.meal === ui.addMeal && e.date === from; }).forEach(function (e) {
+        var c = Object.assign({}, e); delete c.id; c.date = key; ids.push(addLog(c)); kcal += e.kcal;
+      });
+      save(); toast(MEAL_NAME[ui.addMeal] + ' takrorlandi · ' + n0(kcal) + ' kkal', ids); render();
+    },
+    undo: function (el) {
+      var ids = el.getAttribute('data-v').split(',');
+      db.log = db.log.filter(function (e) { return ids.indexOf(e.id) < 0; });
+      save(); document.getElementById('toast').innerHTML = ''; render();
+    },
     addFood: function () {
       var food = findFood(ui.pick), g = ui.grams;
       if (!food || !g || g <= 0) { toast('Grammni kiriting'); return; }
-      var v = E.foodValues(food, g), portion = null;
-      (food.portions || []).forEach(function (p) { if (p[1] === g) portion = p[0] + ', ' + g + ' g'; });
-      addLog({ date: ui.day || today(), meal: ui.addMeal, foodId: food.id, name: food.name, grams: g, portion: portion, kcal: v.kcal, p: v.p, f: v.f, c: v.c });
-      resetAdd(); toast('Qoʻshildi · ' + v.kcal + ' kkal'); go('#ovqat');
+      var id = logFood(food, g); save();
+      var kcal = E.foodValues(food, g).kcal;
+      ui.pick = null; ui.grams = null; ui.gramEdit = false;
+      toast(food.name + ' qoʻshildi · ' + kcal + ' kkal', [id]); render();
     },
     saveCustom: function () {
       var val = function (id) { return document.getElementById(id).value; };
@@ -602,13 +807,13 @@
       var pg = num(val('cf-pg'));
       if (pg) f.portions.push([val('cf-pl').trim() || 'Porsiya', pg]);
       db.foods.unshift(f); save();
-      ui.form = null; ui.pick = f.id; ui.grams = null; render();
+      ui.form = null; ui.pick = f.id; ui.grams = unitOf(f)[1]; render();
     },
     saveQuick: function () {
       var kcal = num(document.getElementById('q-kcal').value);
       if (!kcal || kcal <= 0) { toast('Kaloriyani kiriting'); return; }
-      addLog({ date: ui.day || today(), meal: ui.addMeal, foodId: null, name: document.getElementById('q-name').value.trim() || 'Tezkor', grams: null, kcal: Math.round(kcal), p: 0, f: 0, c: 0 });
-      resetAdd(); toast('Qoʻshildi'); go('#ovqat');
+      var id = addLog({ date: ui.day || today(), meal: ui.addMeal, foodId: null, name: document.getElementById('q-name').value.trim() || 'Tezkor', grams: null, kcal: Math.round(kcal), p: 0, f: 0, c: 0 });
+      save(); ui.form = null; toast('Qoʻshildi · ' + Math.round(kcal) + ' kkal', [id]); render();
     },
     saveEntry: function (el) {
       var id = el.getAttribute('data-v'), e = db.log.filter(function (x) { return x.id === id; })[0];
@@ -616,9 +821,8 @@
       var food = e.foodId ? findFood(e.foodId) : null;
       if (food) {
         if (!ui.grams || ui.grams <= 0) { toast('Grammni kiriting'); return; }
-        var v = E.foodValues(food, ui.grams), portion = null;
-        (food.portions || []).forEach(function (p) { if (p[1] === ui.grams) portion = p[0] + ', ' + ui.grams + ' g'; });
-        Object.assign(e, { grams: ui.grams, portion: portion, kcal: v.kcal, p: v.p, f: v.f, c: v.c });
+        var v = E.foodValues(food, ui.grams), hit = (food.portions || []).filter(function (p) { return p[1] === ui.grams; })[0];
+        Object.assign(e, { grams: ui.grams, portion: hit ? hit[0] + ', ' + ui.grams + ' g' : null, kcal: v.kcal, p: v.p, f: v.f, c: v.c });
       } else {
         var k = num(document.getElementById('e-kcal').value);
         if (!k) { toast('Kaloriyani kiriting'); return; }
@@ -765,7 +969,8 @@
       if (box) box.innerHTML = resultsHtml();
     } else if (f === 'grams') {
       ui.grams = num(ev.target.value);
-      var food = findFood(ui.pick) || (function () { var e = db.log.filter(function (x) { return x.id === ui.editFor; })[0]; return e && e.foodId ? findFood(e.foodId) : null; })();
+      if (ui.pick) { updateSheet(); return; }
+      var e = db.log.filter(function (x) { return x.id === ui.editFor; })[0], food = e && e.foodId ? findFood(e.foodId) : null;
       var pv = document.getElementById('pv');
       if (pv && food) pv.innerHTML = valuesHtml(food, ui.grams);
       Array.prototype.forEach.call(document.querySelectorAll('.portion'), function (b) { b.setAttribute('aria-pressed', String(Number(b.getAttribute('data-v')) === ui.grams)); });
