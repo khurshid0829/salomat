@@ -1,0 +1,10 @@
+{
+  "name": "salomat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal calorie, weight, fitness and habit PWA",
+  "scripts": {
+    "start": "node serve.js",
+    "test": "node --test tests/*.test.js"
+  }
+}
