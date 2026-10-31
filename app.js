@@ -787,7 +787,7 @@
         (db.log.length ? '' : '<button class="btn ghost block" data-act="demo">Namuna maʼlumot bilan sinab koʻrish</button>') +
         '<button class="btn danger block" data-act="clearAll">Hamma maʼlumotni oʻchirish</button></section>';
     }
-    h += '<p class="tiny muted center" style="margin:0">Salomat 0.3 · tibbiy maslahat oʻrnini bosmaydi. Homiladorlik, qandli diabet yoki boshqa kasallik boʻlsa, shifokor bilan maslahatlashing.</p>';
+    h += '<p class="tiny muted center" style="margin:0">Salomat 0.4 · tibbiy maslahat oʻrnini bosmaydi. Homiladorlik, qandli diabet yoki boshqa kasallik boʻlsa, shifokor bilan maslahatlashing.</p>';
     return h;
   }
 
