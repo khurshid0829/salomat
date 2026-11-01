@@ -313,3 +313,4 @@ input[type="date"].input::-webkit-date-and-time-value { text-align: left; margin
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+.bk-name { font: inherit; font-weight: 600; }

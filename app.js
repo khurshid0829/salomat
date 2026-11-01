@@ -172,6 +172,8 @@
   function viewToday() {
     var key = today(), s = snapshot(key), h = '';
     h += header(dayLabel(key), 'Bugun', '<a class="icon-btn" href="#profil" aria-label="Maqsad va profil">' + icon('user', 22) + '</a>');
+    var bk = Backup.reminder();
+    if (bk) h += '<a class="card soft small" href="#profil" style="text-decoration:none">' + bk + '</a>';
 
     var left = s.b.budget - s.t.kcal, over = left < 0;
     var pct = s.b.budget ? Math.round(s.t.kcal / s.b.budget * 100) : 0;
@@ -838,13 +840,14 @@
     h += '<button class="btn block" data-act="saveProfile">' + (first ? 'Boshlash' : 'Saqlash') + '</button>';
 
     if (!first) {
-      h += '<section class="card"><h2>Maʼlumotlar</h2><span class="small muted">Hammasi faqat shu qurilmada saqlanadi. Vaqti-vaqti bilan nusxa oling.</span>' +
+      h += Backup.html();
+      h += '<section class="card"><h2>Maʼlumotlar</h2><span class="small muted">Hammasi shu qurilmada saqlanadi. Telegram zaxirasi ulanmagan boʻlsa, vaqti-vaqti bilan nusxa oling.</span>' +
         '<button class="btn secondary block" data-act="export">Nusxa olish (JSON)</button>' +
         '<label class="btn secondary block" style="cursor:pointer">Nusxadan tiklash<input type="file" accept="application/json,.json" data-act-change="import" hidden></label>' +
         (db.log.length ? '' : '<button class="btn ghost block" data-act="demo">Namuna maʼlumot bilan sinab koʻrish</button>') +
         '<button class="btn danger block" data-act="clearAll">Hamma maʼlumotni oʻchirish</button></section>';
     }
-    h += '<p class="tiny muted center" style="margin:0">Salomat 0.5 · tibbiy maslahat oʻrnini bosmaydi. Homiladorlik, qandli diabet yoki boshqa kasallik boʻlsa, shifokor bilan maslahatlashing.</p>';
+    h += '<p class="tiny muted center" style="margin:0">Salomat 0.6 · tibbiy maslahat oʻrnini bosmaydi. Homiladorlik, qandli diabet yoki boshqa kasallik boʻlsa, shifokor bilan maslahatlashing.</p>';
     return h;
   }
 
@@ -1114,6 +1117,7 @@
       save(); ui.pdraft = null; toast('Saqlandi'); go('#bugun');
     },
     export: function () {
+      Backup.noteManual();
       var name = 'salomat-' + today() + '.json', file = new File([JSON.stringify(db, null, 2)], name, { type: 'application/json' });
       if (navigator.canShare && navigator.canShare({ files: [file] })) { navigator.share({ files: [file], title: name }).catch(function () { /* closed */ }); return; }
       var a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; document.body.appendChild(a); a.click();
@@ -1129,11 +1133,11 @@
   function importFile(input) {
     var f = input.files && input.files[0];
     if (!f) return;
-    f.text().then(function (text) {
+    f.text().then(Backup.open).then(function (text) {
       var data = normalize(JSON.parse(text));
       if (!confirm(data.log.length + ' ta ovqat yozuvi topildi. Joriy maʼlumotlar almashtirilsinmi?')) return;
       db = data; save(); render(); toast('Tiklandi');
-    }).catch(function () { toast('Fayl oʻqilmadi'); });
+    }).catch(function (e) { toast(e.userMsg || 'Fayl oʻqilmadi'); });
   }
 
   // 45 days of plausible sample data around the current profile.
@@ -1215,6 +1219,8 @@
     render();
   });
   document.addEventListener('visibilitychange', function () { if (!document.hidden && !document.activeElement.matches('input, textarea')) render(); });
+
+  Backup.setup({ name: 'salomat', title: 'Salomat', getData: function () { return db; }, hasData: function () { return !!db.profile; }, toast: toast });
 
   render();
 
